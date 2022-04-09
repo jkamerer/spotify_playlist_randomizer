@@ -1,0 +1,28 @@
+#!/usr/bin/env ruby
+
+require 'json'
+require 'csv'
+
+def download_playlist(playlist_id, output_filename, access_token)
+  output_file = CSV.open(output_filename, 'w')
+  output_file << [ 'uri', 'song', 'album', 'artists' ]
+  url = "https://api.spotify.com/v1/playlists/#{playlist_id}/tracks?limit=50"
+  while url do
+    puts url
+    result_str = `curl -H "Authorization: Bearer #{access_token}" -H Content-Type:application/json "#{url}" 2> /dev/null`
+    result = JSON.parse(result_str)
+    result['items'].each do |i|
+      track = i['track']
+      output_file << [ track['uri'], track['name'], track['album']['name'], track['artists'].map { |a| a['name'] }.join(',') ]
+    end
+    url = result['next']
+  end
+  output_file.close
+end
+
+unless ARGV.length == 3
+  STDERR.puts "Usage: #{$0} playlist_id output_file access_token"
+  exit 1
+end
+
+download_playlist(*ARGV)

@@ -1,0 +1,95 @@
+#!/usr/bin/env ruby
+
+require 'json'
+require 'csv'
+
+class SongSetMatcher
+  def initialize(set)
+    @artist_re = make_regexp(set['artist'])
+    @album_re = make_regexp(set['album'])
+    @first_song_re = make_regexp(set['songs'].shift)
+    @first_song_uri = nil
+    @rest_songs_res = set['songs'].map { |s| make_regexp(s) }
+    @rest_songs_uris = set['songs'].map { |s| nil }
+  end
+
+  def check_song(song_desc)
+    return nil unless @artist_re =~ song_desc['artists'] && @album_re =~ song_desc['album']
+    if @first_song_re =~ song_desc['song']
+      @first_song_uri = song_desc['uri']
+      return false
+    end
+    @rest_songs_res.each_with_index do |s, i|
+      if s =~ song_desc['song']
+        @rest_songs_uris[i] = song_desc['uri']
+        return true
+      end
+    end
+    nil
+  end
+
+  def match_songs(uri_list)
+    index = uri_list.find_index(@first_song_uri)
+    if index
+      @rest_songs_uris.each do |uri|
+        index += 1
+        uri_list.insert(index, uri)
+      end
+    end
+  end
+
+  private
+
+  def make_regexp(str)
+    Regexp.new(str.gsub('.', '\.'), Regexp::IGNORECASE)
+  end
+end
+
+class SongMatcher
+  def initialize(songs_to_match)
+    src = JSON.load_file(songs_to_match)
+    @set_matchers = src.map { |set| SongSetMatcher.new(set) }
+  end
+
+  def check_song(song_desc)
+    @set_matchers.each do |sm|
+      result = sm.check_song(song_desc)
+      return result unless result.nil?
+    end
+    false
+  end
+
+  def match_songs(uri_list)
+    @set_matchers.each { |sm| sm.match_songs(uri_list) }
+  end
+end
+
+def playlist_randomizer(new_playlist_name, input_filename, user_id, access_token, songs_to_match=nil)
+  song_matcher = SongMatcher.new(songs_to_match) if songs_to_match
+
+  result_str = `curl -v -H "Authorization: Bearer #{access_token}" -H Content-Type:application/json https://api.spotify.com/v1/users/#{user_id}/playlists --data '{"name":"#{new_playlist_name}","description":"","public":false}'`
+  result = JSON.parse(result_str)
+  playlist_id = result['id']
+
+  tracks = []
+  input_file = CSV.new(File.open(input_filename, 'r'), headers: true).each do |l|
+    tracks << l['uri'] unless song_matcher && song_matcher.check_song(l)
+  end
+  tracks.shuffle!
+
+  #outfile = File.new(new_playlist_name, 'w')
+  tracks.each_slice(50) do |tl|
+    song_matcher.match_songs(tl) if song_matcher
+    #tl.each { |t| outfile.puts(t) }
+    comma_sep_list = tl.map { |t| "\"#{t}\"" }.join(',')
+    puts `curl -v -H "Authorization: Bearer #{access_token}" -H Content-Type:application/json https://api.spotify.com/v1/playlists/#{playlist_id}/tracks --data '{"uris":[#{comma_sep_list}]}'`
+  end
+  #outfile.close
+end
+
+unless ARGV.length == 4 || ARGV.length == 5
+  STDERR.puts "Usage: #{$0} new_playlist_name input_filename user_id access_token [input_json_songs_to_match]"
+  exit 1
+end
+
+playlist_randomizer(*ARGV)
