@@ -1,0 +1,102 @@
+#!/usr/bin/env ruby
+
+require 'json'
+require 'csv'
+
+class String
+  def split_words
+    self.downcase.split.map { |w| w.tr(',.?', '') }
+  end
+end
+
+def match?(mode, track, searches)
+  words = track['song'].split_words + track['album'].split_words
+  track['artists'].split(',').each { |a| words += a.split_words }
+  searches.each do |search|
+    result = search[:words].each_with_object({ m: true }) { |r, o| o[:m] &&= words.include?(r) }
+    if result[:m]
+      song_desc = "#{track['song']} by #{track['artists']} from album #{track['album']}"
+      answer = ''
+      until [ 'y', 'n' ].include?(answer[0]) do
+        $stdout.write("Do you want to #{mode} #{song_desc}? ")
+        answer = $stdin.readline
+      end
+      if answer[0] == 'y'
+        search[:matches] << song_desc
+        return true
+      else
+        search[:declined_matches] << song_desc
+      end
+    end
+  end
+  false
+end
+
+def long_report(mode, obj)
+  action = (mode == 'add' ? 'added' : 'removed')
+  puts "  Search \"#{obj[:original]}\" matched #{obj[:matches].length + obj[:declined_matches].length} songs. #{obj[:matches].length} songs will be #{action}."
+  puts "    Matched songs that will be #{action}: #{obj[:matches].join(', ')}" unless obj[:matches].empty?
+  puts "    Matched songs that will NOT be #{action}: #{obj[:declined_matches].join(', ')}" unless obj[:declined_matches].empty?
+end
+
+def short_report(obj)
+  obj[:matches].each { |s| puts "  #{s}" }
+end
+
+def playlist_song_updater(mode, playlist_id, tracklist_filename, match_songs_filename, access_token)
+  unless [ 'add', 'remove' ].include?(mode)
+    STDERR.puts 'Usage: mode must be add or remove'
+    exit 1
+  end
+
+  searches = []
+  File.open(match_songs_filename, 'r').each do |line|
+    words = line.split_words
+    next if words.empty?
+    searches << { words: words, original: line.strip, matches: [], declined_matches: [] }
+  end
+
+  tracks = []
+  CSV.new(File.open(tracklist_filename, 'r'), headers: true).each { |track| tracks << track['uri'] if match?(mode, track, searches) }
+
+  puts
+  puts "Report on what was matched and declined:"
+  searches.each { |search| long_report(mode, search) }
+  puts
+
+  puts "Songs that will be :"
+  searches.each { |search| short_report(search) }
+  puts
+
+  if tracks.empty?
+    puts "No tracks to #{mode}. Done!"
+  else
+    answer = ''
+    until [ 'y', 'n' ].include?(answer[0]) do
+      $stdout.write "Will #{mode} #{tracks.length} tracks #{mode == 'add' ? 'to' : 'from'} playlist #{playlist_id}. Proceed? "
+      answer = $stdin.readline
+    end
+    if answer[0] == 'y'
+      if mode == 'add'
+        tracks.each_slice(100) do |tl|
+          comma_sep_list = tl.map { |t| "\"#{t}\"" }.join(',')
+          puts `curl -v -X POST -H "Authorization: Bearer #{access_token}" -H Content-Type:application/json https://api.spotify.com/v1/playlists/#{playlist_id}/tracks --data '{"uris":[#{comma_sep_list}]}'`
+        end
+      else
+        tracks.each_slice(100) do |tl|
+          comma_sep_list = tl.map { |t| "{\"uri\":\"#{t}\"}" }.join(',')
+          puts `curl -v -X DELETE -H "Authorization: Bearer #{access_token}" -H Content-Type:application/json https://api.spotify.com/v1/playlists/#{playlist_id}/tracks --data '{"tracks":[#{comma_sep_list}]}'`
+        end
+      end
+    else
+      puts 'Aborted!'
+    end
+  end
+end
+
+unless ARGV.length == 5
+  STDERR.puts "Usage: #{$0} mode playlist_id tracklist_filename match_songs_filename access_token"
+  exit 1
+end
+
+playlist_song_updater(*ARGV)

@@ -72,7 +72,7 @@ def playlist_randomizer(new_playlist_name, input_filename, user_id, access_token
   playlist_id = result['id']
 
   tracks = []
-  input_file = CSV.new(File.open(input_filename, 'r'), headers: true).each do |l|
+  CSV.new(File.open(input_filename, 'r'), headers: true).each do |l|
     tracks << l['uri'] unless song_matcher && song_matcher.check_song(l)
   end
   tracks.shuffle!
