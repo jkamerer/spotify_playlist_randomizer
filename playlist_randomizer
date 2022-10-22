@@ -15,7 +15,7 @@ class SongSetMatcher
 
   def check_song(song_desc)
     return nil unless @artist_re =~ song_desc['artists'] && @album_re =~ song_desc['album']
-    if @first_song_re =~ song_desc['song']
+    if @first_song_uri.nil? && @first_song_re =~ song_desc['song']
       @first_song_uri = song_desc['uri']
       return false
     end
@@ -31,9 +31,13 @@ class SongSetMatcher
   def match_songs(uri_list)
     index = uri_list.find_index(@first_song_uri)
     if index
-      @rest_songs_uris.each do |uri|
-        index += 1
-        uri_list.insert(index, uri)
+      @rest_songs_uris.each_with_index do |uri, i|
+        if uri.nil?
+          STDERR.puts "MISSING SONG: #{@rest_songs_res[i]}"
+        else
+          index += 1
+          uri_list.insert(index, uri)
+        end
       end
     end
   end
