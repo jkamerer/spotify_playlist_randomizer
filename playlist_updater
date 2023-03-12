@@ -5,42 +5,123 @@ require 'csv'
 
 class String
   def split_words
-    self.downcase.split.map { |w| w.tr(',.?', '') }
+    self.downcase.split.map { |w| w.tr(',.?!*()"', '') }
   end
 end
 
-def match?(mode, track, searches)
-  words = track['song'].split_words + track['album'].split_words
-  track['artists'].split(',').each { |a| words += a.split_words }
-  searches.each do |search|
-    result = search[:words].each_with_object({ m: true }) { |r, o| o[:m] &&= words.include?(r) }
-    if result[:m]
-      song_desc = "#{track['song']} by #{track['artists']} from album #{track['album']}"
-      answer = ''
-      until [ 'y', 'n' ].include?(answer[0]) do
-        $stdout.write("Do you want to #{mode} #{song_desc}? ")
-        answer = $stdin.readline
-      end
-      if answer[0] == 'y'
-        search[:matches] << song_desc
-        return true
+def song_desc(track)
+  "#{track['song']} by #{track['artists']} from album #{track['album']}"
+end
+
+def handle_numeric_choices(answer, search, tracks, matches)
+
+  choices = answer.split(',').map { |c| c.to_i }
+  picked = {}
+  choices.each do |c|
+    return false if c < 1 || c > matches.length || picked[c]
+    picked[c] = true
+  end
+
+  search[:matches] = []
+  search[:declined_matches] = []
+  (1..matches.length).each do |i|
+    if picked[i]
+      search[:matches] << matches[i - 1]
+      tracks << matches[i - 1]
+    else
+      search[:declined_matches] << matches[i - 1]
+    end
+  end
+  return true
+end
+
+def handle_multiple_matches(mode, search, tracks, matches)
+  puts "Multiple matches for search \"#{search[:original]}\":"
+  matches.each_with_index { |m, i| puts "#{i + 1}: #{song_desc(m)}" }
+  while true do
+    $stdout.write("Which do you want to #{mode}? (a for all, n for none or enter one or more numbers, comma separated) ")
+    answer = $stdin.readline.strip
+    if answer == 'n'
+      search[:declined_matches] = matches
+      break
+    elsif answer == 'a'
+      search[:matches] = matches
+      matches.each { |m| tracks << m }
+      break
+    else
+      if handle_numeric_choices(answer, search, tracks, matches)
+        break
       else
-        search[:declined_matches] << song_desc
+        puts 'Invalid input, try again.'
       end
     end
   end
-  false
 end
 
-def long_report(mode, obj)
+def match_against_search(mode, search, tracks, all_tracks, searches)
+  matches = []
+  all_tracks.each do |track|
+    result = search[:words].each_with_object({ m: true }) { |r, o| o[:m] &&= track['words'].include?(r) }
+    matches << track if result[:m]
+  end
+  if matches.empty?
+    puts "NO MATCH for search \"#{search[:original]}\"!"
+    searches[:none_match] << search
+  elsif matches.length == 1
+    desc = song_desc(matches.first)
+    puts "Single match for search \"#{search[:original]}\": #{desc}"
+    search[:matches] = matches
+    searches[:one_match] << search
+    tracks << matches.first
+  else
+    handle_multiple_matches(mode, search, tracks, matches)
+    searches[:multi_match] << search
+  end
+end
+
+def report(mode, searches, tracks)
   action = (mode == 'add' ? 'added' : 'removed')
-  puts "  Search \"#{obj[:original]}\" matched #{obj[:matches].length + obj[:declined_matches].length} songs. #{obj[:matches].length} songs will be #{action}."
-  puts "    Matched songs that will be #{action}: #{obj[:matches].join(', ')}" unless obj[:matches].empty?
-  puts "    Matched songs that will NOT be #{action}: #{obj[:declined_matches].join(', ')}" unless obj[:declined_matches].empty?
-end
 
-def short_report(obj)
-  obj[:matches].each { |s| puts "  #{s}" }
+  unless searches[:none_match].empty?
+    puts
+    puts 'Searches with NO MATCH:'
+    searches[:none_match].each { |search| puts "  #{search[:original]}" }
+    $stdout.write('Hit enter to continue')
+    $stdin.readline
+    puts
+  end
+
+  unless searches[:one_match].empty?
+    puts 'Searches with JUST ONE MATCH:'
+    searches[:one_match].each { |search| puts "  \"#{search[:original]}\" matched #{song_desc(search[:matches].first)}" }
+    $stdout.write('Hit enter to continue')
+    $stdin.readline
+    puts
+  end
+
+  unless searches[:multi_match].empty?
+    puts 'Searches with MULTIPLE MATCHES:'
+    searches[:multi_match].each do |search|
+      puts "  \"#{search[:original]}\" matched #{search[:matches].length + search[:declined_matches].length} songs. #{search[:matches].length} songs will be #{action}."
+      unless search[:matches].nil? || search[:matches].empty?
+        puts "    Matched songs that will be #{action}:"
+        search[:matches].each { |t| puts "      #{song_desc(t)}" }
+      end
+      unless search[:declined_matches].nil? || search[:declined_matches].empty?
+        puts "    Matched songs that will NOT be #{action}:"
+        search[:declined_matches].each { |t| puts "      #{song_desc(t)}" }
+      end
+    end
+    $stdout.write('Hit enter to continue')
+    $stdin.readline
+    puts
+  end
+
+  unless tracks.empty?
+    puts "Songs that will be #{action}:"
+    tracks.each { |t| puts "   #{song_desc(t)}" }
+    puts
+  end
 end
 
 def playlist_song_updater(mode, playlist_id, tracklist_filename, match_songs_filename, access_token)
@@ -49,32 +130,32 @@ def playlist_song_updater(mode, playlist_id, tracklist_filename, match_songs_fil
     exit 1
   end
 
-  searches = []
-  File.open(match_songs_filename, 'r').each do |line|
-    words = line.split_words
-    next if words.empty?
-    searches << { words: words, original: line.strip, matches: [], declined_matches: [] }
+  all_tracks = []
+  CSV.new(File.open(tracklist_filename, 'r'), headers: true).each do |track|
+    words = track['song'].split_words + track['album'].split_words
+    track['artists'].split(',').each { |a| words += a.split_words }
+    track['words'] = words
+    all_tracks << track
   end
 
   tracks = []
-  CSV.new(File.open(tracklist_filename, 'r'), headers: true).each { |track| tracks << track['uri'] if match?(mode, track, searches) }
+  searches = { none_match: [ ], one_match: [ ], multi_match: [ ] }
+  File.open(match_songs_filename, 'r').each do |line|
+    words = line.split_words
+    next if words.empty?
+    search = { words: words, original: line.strip }
+    match_against_search(mode, search, tracks, all_tracks, searches)
+  end
 
-  puts
-  puts "Report on what was matched and declined:"
-  searches.each { |search| long_report(mode, search) }
-  puts
-
-  puts "Songs that will be :"
-  searches.each { |search| short_report(search) }
-  puts
+  report(mode, searches, tracks)
 
   if tracks.empty?
     puts "No tracks to #{mode}. Done!"
   else
     answer = ''
     until [ 'y', 'n' ].include?(answer[0]) do
-      $stdout.write "Will #{mode} #{tracks.length} tracks #{mode == 'add' ? 'to' : 'from'} playlist #{playlist_id}. Proceed? "
-      answer = $stdin.readline
+      $stdout.write "Will #{mode} #{tracks.length} tracks #{mode == 'add' ? 'to' : 'from'} playlist #{playlist_id}. Proceed? (y/n)"
+      answer = $stdin.readline.strip
     end
     if answer[0] == 'y'
       if mode == 'add'
