@@ -160,12 +160,12 @@ def playlist_song_updater(mode, playlist_id, tracklist_filename, match_songs_fil
     if answer[0] == 'y'
       if mode == 'add'
         tracks.each_slice(100) do |tl|
-          comma_sep_list = tl.map { |t| "\"#{t}\"" }.join(',')
+          comma_sep_list = tl.map { |t| "\"#{t['uri']}\"" }.join(',')
           puts `curl -v -X POST -H "Authorization: Bearer #{access_token}" -H Content-Type:application/json https://api.spotify.com/v1/playlists/#{playlist_id}/tracks --data '{"uris":[#{comma_sep_list}]}'`
         end
       else
         tracks.each_slice(100) do |tl|
-          comma_sep_list = tl.map { |t| "{\"uri\":\"#{t}\"}" }.join(',')
+          comma_sep_list = tl.map { |t| "{\"uri\":\"#{t['uri']}\"}" }.join(',')
           puts `curl -v -X DELETE -H "Authorization: Bearer #{access_token}" -H Content-Type:application/json https://api.spotify.com/v1/playlists/#{playlist_id}/tracks --data '{"tracks":[#{comma_sep_list}]}'`
         end
       end
